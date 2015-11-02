@@ -1,0 +1,4 @@
+[package]
+name = "EasyElo"
+version = "0.1.0"
+authors = ["Lyn Levenick <lyn.levenick@gmail.com>"]
