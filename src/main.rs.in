@@ -6,7 +6,6 @@ extern crate getopts;
 use getopts::Options;
 use std::env;
 use std::path::Path;
-use std::process;
 
 mod caching {
     use chrono::DateTime;
@@ -101,7 +100,7 @@ fn main() {
     let mut opts = Options::new();
     opts.optflag("h", "help", "Print this message")
         .optopt("i", "input", "The file to input tournament IDs from (default input.txt)", "INPUT_FILE")
-        .optopt("k", "api-key", "The Challonge API key", "API_KEY")
+        .reqopt("k", "api-key", "The Challonge API key (required)", "API_KEY")
         .optopt("c", "cache-file", "The file to store the tournament cache inside (default cache.json)", "CACHE_FILE")
         .optopt("o", "output", "The file to output rankings to (default output.json)", "OUTPUT_FILE");
     let matches = match opts.parse(&args[1..]) {
@@ -117,12 +116,6 @@ fn main() {
         usage(&program, opts);
         return;
     }
-
-    let api_key = matches.opt_str("k").or_else(|| {
-        println!("Required option 'api-key' missing.");
-        usage(&program, opts);
-        process::exit(0);
-    });
 
     let input_pathname = matches.opt_str("i").unwrap_or("input.txt".to_owned());
     let cache_pathname = matches.opt_str("c").unwrap_or("cache.json".to_owned());
