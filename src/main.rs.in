@@ -48,19 +48,27 @@ fn usage(prog: &str, opts: Options) {
     print!("{}", opts.usage(&brief));
 }
 
-fn parse_cache(cache_path: &Path) -> TournamentCacheWrapped {
+fn cache_read(cache_path: &Path) -> TournamentCache {
+    cache_unwrap(cache_parse(cache_path))
+}
+fn cache_write(cache_path: &Path, cache: TournamentCache) -> Result<(), std::io::Error> {
+    serde_json::to_writer(&mut try!(File::create(cache_path)),
+                          &cache_wrap(cache)).unwrap();
+    Ok(())
+}
+fn cache_parse(cache_path: &Path) -> TournamentCacheWrapped {
     File::open(cache_path)
         .map(|f| serde_json::from_reader(f).expect("The cache should contain valid JSON"))
         .unwrap_or_else(|_| HashMap::new())
 }
-fn wrap_cache(unwrapped_cache: TournamentCache) -> TournamentCacheWrapped {
+fn cache_wrap(unwrapped_cache: TournamentCache) -> TournamentCacheWrapped {
     unwrapped_cache.into_iter().map(|(k, v)| {
         (k, v.into_iter().map(|(dt, winner, loser)| {
             (DateTimeWrapper(dt), winner, loser)
         }).collect())
     }).collect()
 }
-fn unwrap_cache(wrapped_cache: TournamentCacheWrapped) -> TournamentCache {
+fn cache_unwrap(wrapped_cache: TournamentCacheWrapped) -> TournamentCache {
     wrapped_cache.into_iter().map(|(k, v)| {
         (k, v.into_iter().map(|(dt, winner, loser)| {
             let DateTimeWrapper(dt) = dt;
@@ -107,11 +115,7 @@ fn main() {
     let cache_path = Path::new(&cache_pathname);
     let output_path = Path::new(&output_pathname);
 
-    let mut cache = unwrap_cache(parse_cache(&cache_path));
+    let mut cache = cache_read(&cache_path);
 
-    cache.insert("fake-tournament".to_owned(), vec![(DateTime::parse_from_rfc3339("1996-12-19T16:39:57-08:00").unwrap(), "me".to_owned(), "you".to_owned())]);
-    cache.insert("fake-tournament2".to_owned(), vec![(DateTime::parse_from_rfc3339("1996-12-19T16:39:58-08:00").unwrap(), "me".to_owned(), "you".to_owned())]);
-
-    let mut cache_file = File::create(cache_path).expect("The cache should be a writable file");
-    serde_json::to_writer(&mut cache_file, &wrap_cache(cache)).expect("The cache should be written successfully");
+    cache_write(cache_path, cache).expect("The cache should write successfully.");
 }
