@@ -7,7 +7,7 @@ use getopts::Options;
 use std::env;
 use std::path::Path;
 
-mod caching {
+mod types {
     use chrono::DateTime;
     use chrono::FixedOffset;
     use serde;
@@ -32,10 +32,10 @@ mod caching {
         JsonError(serde_json::Error)
     }
 
-    pub fn read(cache_path: &Path) -> Result<TournamentCache, serde_json::Error> {
+    pub fn cache_read(cache_path: &Path) -> Result<TournamentCache, serde_json::Error> {
         Ok(unwrap(try!(parse(cache_path))))
     }
-    pub fn write(cache_path: &Path, cache: TournamentCache) -> Result<(), CacheWriteError> {
+    pub fn cache_write(cache_path: &Path, cache: TournamentCache) -> Result<(), CacheWriteError> {
         serde_json::to_writer(&mut try!(File::create(cache_path)
                                         .map_err(CacheWriteError::IoError)),
                               &wrap(cache)).map_err(CacheWriteError::JsonError)
@@ -124,7 +124,7 @@ fn main() {
     let cache_path = Path::new(&cache_pathname);
     let output_path = Path::new(&output_pathname);
 
-    let mut cache = caching::read(&cache_path).expect("The cache should read successfully.");
+    let mut cache = types::cache_read(&cache_path).expect("The cache should read successfully.");
 
-    caching::write(&cache_path, cache).expect("The cache should write successfully.");
+    types::cache_write(&cache_path, cache).expect("The cache should write successfully.");
 }
