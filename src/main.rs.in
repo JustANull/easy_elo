@@ -3,78 +3,95 @@ extern crate crossbeam;
 extern crate ease;
 extern crate getopts;
 
-use chrono::DateTime;
 use getopts::Options;
-use std::collections::HashMap;
 use std::env;
-use std::fs::File;
 use std::path::Path;
 use std::process;
 
-// A map from a tournament id "e.g. tloc-mnm32" to a vector of match results.
-type TournamentCache = HashMap<String, Vec<MatchResult>>;
-// ditto. contains wrapped date times to move items through chrono
-type TournamentCacheWrapped = HashMap<String, Vec<MatchResultWrapped>>;
-// The time of a match and the winner and loser
-type MatchResult = (DateTime<chrono::FixedOffset>, String, String);
-// ditto. contains wrapped date time to move the item through chrono
-type MatchResultWrapped = (DateTimeWrapper, String, String);
+mod caching {
+    use chrono::DateTime;
+    use chrono::FixedOffset;
+    use serde;
+    use serde_json;
+    use std::collections::HashMap;
+    use std::fs::File;
+    use std::io::Error as IoError;
+    use std::path::Path;
 
-struct DateTimeWrapper(DateTime<chrono::FixedOffset>);
-impl serde::ser::Serialize for DateTimeWrapper {
-    fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error> where S: serde::Serializer {
-        serializer.visit_str(&self.0.to_rfc3339())
-    }
-}
-impl serde::de::Deserialize for DateTimeWrapper {
-    fn deserialize<D>(deserializer: &mut D) -> Result<DateTimeWrapper, D::Error> where D: serde::Deserializer {
-        deserializer.visit(DateTimeVisitor)
-    }
-}
-struct DateTimeVisitor;
-impl serde::de::Visitor for DateTimeVisitor {
-    type Value = DateTimeWrapper;
+    // A map from a tournament id "e.g. tloc-mnm32" to a vector of match results.
+    pub type TournamentCache = HashMap<String, Vec<MatchResult>>;
+    // ditto. contains wrapped date times to move items through chrono
+    type TournamentCacheWrapped = HashMap<String, Vec<MatchResultWrapped>>;
+    // The time of a match and the winner and loser
+    pub type MatchResult = (DateTime<FixedOffset>, String, String);
+    // ditto. contains wrapped date time to move the item through chrono
+    type MatchResultWrapped = (DateTimeWrapper, String, String);
 
-    fn visit_str<E>(&mut self, s: &str) -> Result<Self::Value, E> where E: serde::de::Error {
-        match DateTime::parse_from_rfc3339(s) {
-            Ok(dt) => Ok(DateTimeWrapper(dt)),
-            Err(_) => Err(serde::de::Error::syntax("expect an ISO 8601 datetime"))
+    #[derive(Debug)]
+    pub enum CacheWriteError {
+        IoError(IoError),
+        JsonError(serde_json::Error)
+    }
+
+    pub fn read(cache_path: &Path) -> Result<TournamentCache, serde_json::Error> {
+        Ok(unwrap(try!(parse(cache_path))))
+    }
+    pub fn write(cache_path: &Path, cache: TournamentCache) -> Result<(), CacheWriteError> {
+        serde_json::to_writer(&mut try!(File::create(cache_path)
+                                        .map_err(CacheWriteError::IoError)),
+                              &wrap(cache)).map_err(CacheWriteError::JsonError)
+    }
+
+    fn parse(cache_path: &Path) -> Result<TournamentCacheWrapped, serde_json::Error> {
+        File::open(cache_path)
+            .map(|f| serde_json::from_reader(f))
+            .unwrap_or_else(|_| Ok(HashMap::new()))
+    }
+    fn wrap(unwrapped_cache: TournamentCache) -> TournamentCacheWrapped {
+        unwrapped_cache.into_iter().map(|(k, v)| {
+            (k, v.into_iter().map(|(dt, winner, loser)| {
+                (DateTimeWrapper(dt), winner, loser)
+            }).collect())
+        }).collect()
+    }
+    fn unwrap(wrapped_cache: TournamentCacheWrapped) -> TournamentCache {
+        wrapped_cache.into_iter().map(|(k, v)| {
+            (k, v.into_iter().map(|(dt, winner, loser)| {
+                let DateTimeWrapper(dt) = dt;
+                (dt, winner, loser)
+            }).collect())
+        }).collect()
+    }
+
+    // Here be dragons. The wrappers to move DateTime items through serde
+    struct DateTimeWrapper(DateTime<FixedOffset>);
+    impl serde::ser::Serialize for DateTimeWrapper {
+        fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error> where S: serde::Serializer {
+            serializer.visit_str(&self.0.to_rfc3339())
         }
     }
+    impl serde::de::Deserialize for DateTimeWrapper {
+        fn deserialize<D>(deserializer: &mut D) -> Result<DateTimeWrapper, D::Error> where D: serde::Deserializer {
+            deserializer.visit(DateTimeVisitor)
+        }
+    }
+    struct DateTimeVisitor;
+    impl serde::de::Visitor for DateTimeVisitor {
+        type Value = DateTimeWrapper;
+
+        fn visit_str<E>(&mut self, s: &str) -> Result<Self::Value, E> where E: serde::de::Error {
+            match DateTime::parse_from_rfc3339(s) {
+                Ok(dt) => Ok(DateTimeWrapper(dt)),
+                Err(_) => Err(serde::de::Error::syntax("expect an ISO 8601 datetime"))
+            }
+        }
+    }
+
 }
 
 fn usage(prog: &str, opts: Options) {
     let brief = format!("Usage: {} [options]", prog);
     print!("{}", opts.usage(&brief));
-}
-
-fn cache_read(cache_path: &Path) -> TournamentCache {
-    cache_unwrap(cache_parse(cache_path))
-}
-fn cache_write(cache_path: &Path, cache: TournamentCache) -> Result<(), std::io::Error> {
-    serde_json::to_writer(&mut try!(File::create(cache_path)),
-                          &cache_wrap(cache)).unwrap();
-    Ok(())
-}
-fn cache_parse(cache_path: &Path) -> TournamentCacheWrapped {
-    File::open(cache_path)
-        .map(|f| serde_json::from_reader(f).expect("The cache should contain valid JSON"))
-        .unwrap_or_else(|_| HashMap::new())
-}
-fn cache_wrap(unwrapped_cache: TournamentCache) -> TournamentCacheWrapped {
-    unwrapped_cache.into_iter().map(|(k, v)| {
-        (k, v.into_iter().map(|(dt, winner, loser)| {
-            (DateTimeWrapper(dt), winner, loser)
-        }).collect())
-    }).collect()
-}
-fn cache_unwrap(wrapped_cache: TournamentCacheWrapped) -> TournamentCache {
-    wrapped_cache.into_iter().map(|(k, v)| {
-        (k, v.into_iter().map(|(dt, winner, loser)| {
-            let DateTimeWrapper(dt) = dt;
-            (dt, winner, loser)
-        }).collect())
-    }).collect()
 }
 
 fn main() {
@@ -115,7 +132,7 @@ fn main() {
     let cache_path = Path::new(&cache_pathname);
     let output_path = Path::new(&output_pathname);
 
-    let mut cache = cache_read(&cache_path);
+    let mut cache = caching::read(&cache_path).expect("The cache should read successfully.");
 
-    cache_write(cache_path, cache).expect("The cache should write successfully.");
+    caching::write(&cache_path, cache).expect("The cache should write successfully.");
 }
