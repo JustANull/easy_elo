@@ -4,7 +4,6 @@ extern crate ease;
 extern crate getopts;
 
 use chrono::DateTime;
-use chrono::offset::TimeZone;
 use getopts::Options;
 use std::collections::HashMap;
 use std::env;
@@ -21,12 +20,10 @@ type MatchResult = (DateTime<chrono::FixedOffset>, String, String);
 // ditto. contains wrapped date time to move the item through chrono
 type MatchResultWrapped = (DateTimeWrapper, String, String);
 
-struct DateTimeWrapper {
-    dt: DateTime<chrono::FixedOffset>
-}
+struct DateTimeWrapper(DateTime<chrono::FixedOffset>);
 impl serde::ser::Serialize for DateTimeWrapper {
     fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error> where S: serde::Serializer {
-        serializer.visit_str(&self.dt.to_rfc3339())
+        serializer.visit_str(&self.0.to_rfc3339())
     }
 }
 impl serde::de::Deserialize for DateTimeWrapper {
@@ -40,8 +37,8 @@ impl serde::de::Visitor for DateTimeVisitor {
 
     fn visit_str<E>(&mut self, s: &str) -> Result<Self::Value, E> where E: serde::de::Error {
         match DateTime::parse_from_rfc3339(s) {
-            Ok(dt) => Ok(DateTimeWrapper { dt: dt }),
-            Err(e) => Err(serde::de::Error::syntax("expect an ISO 8601 datetime"))
+            Ok(dt) => Ok(DateTimeWrapper(dt)),
+            Err(_) => Err(serde::de::Error::syntax("expect an ISO 8601 datetime"))
         }
     }
 }
@@ -59,14 +56,14 @@ fn parse_cache(cache_path: &Path) -> TournamentCacheWrapped {
 fn wrap_cache(unwrapped_cache: TournamentCache) -> TournamentCacheWrapped {
     unwrapped_cache.into_iter().map(|(k, v)| {
         (k, v.into_iter().map(|(dt, winner, loser)| {
-            (DateTimeWrapper { dt: dt }, winner, loser)
+            (DateTimeWrapper(dt), winner, loser)
         }).collect())
     }).collect()
 }
 fn unwrap_cache(wrapped_cache: TournamentCacheWrapped) -> TournamentCache {
     wrapped_cache.into_iter().map(|(k, v)| {
         (k, v.into_iter().map(|(dt, winner, loser)| {
-            let DateTimeWrapper { dt } = dt;
+            let DateTimeWrapper(dt) = dt;
             (dt, winner, loser)
         }).collect())
     }).collect()
