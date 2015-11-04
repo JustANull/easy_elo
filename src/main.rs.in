@@ -85,7 +85,6 @@ mod caching {
             }
         }
     }
-
 }
 
 fn usage(prog: &str, opts: Options) {
