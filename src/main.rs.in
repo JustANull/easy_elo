@@ -1,0 +1,120 @@
+extern crate chrono;
+extern crate crossbeam;
+extern crate ease;
+extern crate getopts;
+
+use chrono::DateTime;
+use chrono::offset::TimeZone;
+use getopts::Options;
+use std::collections::HashMap;
+use std::env;
+use std::fs::File;
+use std::path::Path;
+use std::process;
+
+// A map from a tournament id "e.g. tloc-mnm32" to a vector of match results.
+type TournamentCache = HashMap<String, Vec<MatchResult>>;
+// ditto. contains wrapped date times to move items through chrono
+type TournamentCacheWrapped = HashMap<String, Vec<MatchResultWrapped>>;
+// The time of a match and the winner and loser
+type MatchResult = (DateTime<chrono::FixedOffset>, String, String);
+// ditto. contains wrapped date time to move the item through chrono
+type MatchResultWrapped = (DateTimeWrapper, String, String);
+
+struct DateTimeWrapper {
+    dt: DateTime<chrono::FixedOffset>
+}
+impl serde::ser::Serialize for DateTimeWrapper {
+    fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error> where S: serde::Serializer {
+        serializer.visit_str(&self.dt.to_rfc3339())
+    }
+}
+impl serde::de::Deserialize for DateTimeWrapper {
+    fn deserialize<D>(deserializer: &mut D) -> Result<DateTimeWrapper, D::Error> where D: serde::Deserializer {
+        deserializer.visit(DateTimeVisitor)
+    }
+}
+struct DateTimeVisitor;
+impl serde::de::Visitor for DateTimeVisitor {
+    type Value = DateTimeWrapper;
+
+    fn visit_str<E>(&mut self, s: &str) -> Result<Self::Value, E> where E: serde::de::Error {
+        match DateTime::parse_from_rfc3339(s) {
+            Ok(dt) => Ok(DateTimeWrapper { dt: dt }),
+            Err(e) => Err(serde::de::Error::syntax("expect an ISO 8601 datetime"))
+        }
+    }
+}
+
+fn usage(prog: &str, opts: Options) {
+    let brief = format!("Usage: {} [options]", prog);
+    print!("{}", opts.usage(&brief));
+}
+
+fn parse_cache(cache_path: &Path) -> TournamentCacheWrapped {
+    File::open(cache_path)
+        .map(|f| serde_json::from_reader(f).expect("The cache should contain valid JSON"))
+        .unwrap_or_else(|_| HashMap::new())
+}
+fn wrap_cache(unwrapped_cache: TournamentCache) -> TournamentCacheWrapped {
+    unwrapped_cache.into_iter().map(|(k, v)| {
+        (k, v.into_iter().map(|(dt, winner, loser)| {
+            (DateTimeWrapper { dt: dt }, winner, loser)
+        }).collect())
+    }).collect()
+}
+fn unwrap_cache(wrapped_cache: TournamentCacheWrapped) -> TournamentCache {
+    wrapped_cache.into_iter().map(|(k, v)| {
+        (k, v.into_iter().map(|(dt, winner, loser)| {
+            let DateTimeWrapper { dt } = dt;
+            (dt, winner, loser)
+        }).collect())
+    }).collect()
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let program = args[0].clone();
+
+    let mut opts = Options::new();
+    opts.optflag("h", "help", "Print this message")
+        .optopt("i", "input", "The file to input tournament IDs from (default input.txt)", "INPUT_FILE")
+        .optopt("k", "api-key", "The Challonge API key", "API_KEY")
+        .optopt("c", "cache-file", "The file to store the tournament cache inside (default cache.json)", "CACHE_FILE")
+        .optopt("o", "output", "The file to output rankings to (default output.json)", "OUTPUT_FILE");
+    let matches = match opts.parse(&args[1..]) {
+        Ok(m) => m,
+        Err(f) => {
+            println!("Error: {}", f.to_string());
+            usage(&program, opts);
+            return;
+        }
+    };
+
+    if matches.opt_present("h") {
+        usage(&program, opts);
+        return;
+    }
+
+    let api_key = matches.opt_str("k").or_else(|| {
+        println!("Required option 'api-key' missing.");
+        usage(&program, opts);
+        process::exit(0);
+    });
+
+    let input_pathname = matches.opt_str("i").unwrap_or("input.txt".to_owned());
+    let cache_pathname = matches.opt_str("c").unwrap_or("cache.json".to_owned());
+    let output_pathname = matches.opt_str("o").unwrap_or("output.json".to_owned());
+
+    let input_path = Path::new(&input_pathname);
+    let cache_path = Path::new(&cache_pathname);
+    let output_path = Path::new(&output_pathname);
+
+    let mut cache = unwrap_cache(parse_cache(&cache_path));
+
+    cache.insert("fake-tournament".to_owned(), vec![(DateTime::parse_from_rfc3339("1996-12-19T16:39:57-08:00").unwrap(), "me".to_owned(), "you".to_owned())]);
+    cache.insert("fake-tournament2".to_owned(), vec![(DateTime::parse_from_rfc3339("1996-12-19T16:39:58-08:00").unwrap(), "me".to_owned(), "you".to_owned())]);
+
+    let mut cache_file = File::create(cache_path).expect("The cache should be a writable file");
+    serde_json::to_writer(&mut cache_file, &wrap_cache(cache)).expect("The cache should be written successfully");
+}
