@@ -7,10 +7,53 @@ use getopts::Options;
 use std::env;
 use std::path::Path;
 
-mod types {
+mod interop {
     use chrono::DateTime;
     use chrono::FixedOffset;
-    use serde;
+    use serde::{Deserializer, Serializer};
+    use serde::de::{Deserialize, Error, Visitor};
+    use serde::ser::Serialize;
+    use std::ops::{Deref, DerefMut};
+
+    #[derive(Debug)]
+    pub struct SerializableDateTime(DateTime<FixedOffset>);
+    impl Serialize for SerializableDateTime {
+        fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error> where S: Serializer {
+            serializer.visit_str(&self.0.to_rfc3339())
+        }
+    }
+    impl Deserialize for SerializableDateTime {
+        fn deserialize<D>(deserializer: &mut D) -> Result<SerializableDateTime, D::Error> where D: Deserializer {
+            deserializer.visit(DateTimeVisitor)
+        }
+    }
+    struct DateTimeVisitor;
+    impl Visitor for DateTimeVisitor {
+        type Value = SerializableDateTime;
+
+        fn visit_str<E>(&mut self, s: &str) -> Result<Self::Value, E> where E: Error {
+            match DateTime::parse_from_rfc3339(s) {
+                Ok(dt) => Ok(SerializableDateTime(dt)),
+                Err(_) => Err(Error::syntax("expect an ISO 8601 datetime"))
+            }
+        }
+    }
+
+    impl Deref for SerializableDateTime {
+        type Target = DateTime<FixedOffset>;
+
+        fn deref<'a>(&'a self) -> &'a DateTime<FixedOffset> {
+            &self.0
+        }
+    }
+    impl DerefMut for SerializableDateTime {
+        fn deref_mut<'a>(&'a mut self) -> &'a mut DateTime<FixedOffset> {
+            &mut self.0
+        }
+    }
+}
+mod types {
+    use interop::SerializableDateTime;
     use serde_json;
     use std::collections::HashMap;
     use std::fs::File;
@@ -19,13 +62,13 @@ mod types {
 
     // All of a tournament's matches, as received from the Challonge API
     // Only correctly parses completed tournaments
-    pub type TournamentChallonge = Vec<TournamentMatchChallongeWrapper>;
+    pub type TournamentChallonge = Vec<TournamentMatchChallonge>;
     // A tournament match, as received from the Challonge API
     // Only correctly parses completed matches
     #[derive(Debug, Deserialize)]
-    pub struct TournamentMatchChallonge {
+    pub struct TournamentMatchChallongeInterior {
         attachment_count: Option<i64>, // type unsure
-        created_at: DateTimeWrapper,
+        created_at: SerializableDateTime,
         group_id: Option<i64>, // type unsure
         has_attachment: bool,
         id: i64, // the exact, unique match id
@@ -42,31 +85,27 @@ mod types {
         player2_prereq_match_id: Option<i64>,
         player2_votes: Option<i64>, // type unsure, almost definitely wrong
         round: i64,
-        scheduled_time: Option<DateTimeWrapper>,
-        started_at: DateTimeWrapper,
+        scheduled_time: Option<SerializableDateTime>,
+        started_at: SerializableDateTime,
         state: String, // should always be "complete"
         tournament_id: i64,
-        underway_at: Option<DateTimeWrapper>,
-        updated_at: DateTimeWrapper,
+        underway_at: Option<SerializableDateTime>,
+        updated_at: SerializableDateTime,
         winner_id: i64,
         prerequisite_match_ids_csv: String, // you must be joking
         scores_csv: String // see the above ^
     }
     // Challonge API fixup
     #[derive(Debug, Deserialize)]
-    struct TournamentMatchChallongeWrapper {
+    struct TournamentMatchChallonge {
         #[serde(rename="match")]
-        match_obj: TournamentMatchChallonge
+        match_obj: TournamentMatchChallongeInterior
     }
 
     // A map from a tournament id "e.g. tloc-mnm32" to a vector of match results.
     pub type TournamentCache = HashMap<String, Vec<MatchResult>>;
-    // ditto. contains wrapped date times to move items through chrono
-    type TournamentCacheWrapped = HashMap<String, Vec<MatchResultWrapped>>;
     // The time of a match and the winner and loser
-    pub type MatchResult = (DateTime<FixedOffset>, String, String);
-    // ditto. contains wrapped date time to move the item through chrono
-    type MatchResultWrapped = (DateTimeWrapper, String, String);
+    pub type MatchResult = (SerializableDateTime, String, String);
 
     #[derive(Debug)]
     pub enum CacheWriteError {
@@ -75,58 +114,18 @@ mod types {
     }
 
     pub fn cache_read(cache_path: &Path) -> Result<TournamentCache, serde_json::Error> {
-        Ok(unwrap(try!(parse(cache_path))))
+        Ok(try!(parse(cache_path)))
     }
     pub fn cache_write(cache_path: &Path, cache: TournamentCache) -> Result<(), CacheWriteError> {
         serde_json::to_writer(&mut try!(File::create(cache_path)
                                         .map_err(CacheWriteError::IoError)),
-                              &wrap(cache)).map_err(CacheWriteError::JsonError)
+                              &cache).map_err(CacheWriteError::JsonError)
     }
 
-    fn parse(cache_path: &Path) -> Result<TournamentCacheWrapped, serde_json::Error> {
+    fn parse(cache_path: &Path) -> Result<TournamentCache, serde_json::Error> {
         File::open(cache_path)
             .map(|f| serde_json::from_reader(f))
             .unwrap_or_else(|_| Ok(HashMap::new()))
-    }
-    fn wrap(unwrapped_cache: TournamentCache) -> TournamentCacheWrapped {
-        unwrapped_cache.into_iter().map(|(k, v)| {
-            (k, v.into_iter().map(|(dt, winner, loser)| {
-                (DateTimeWrapper(dt), winner, loser)
-            }).collect())
-        }).collect()
-    }
-    fn unwrap(wrapped_cache: TournamentCacheWrapped) -> TournamentCache {
-        wrapped_cache.into_iter().map(|(k, v)| {
-            (k, v.into_iter().map(|(dt, winner, loser)| {
-                let DateTimeWrapper(dt) = dt;
-                (dt, winner, loser)
-            }).collect())
-        }).collect()
-    }
-
-    // Here be dragons. The wrappers to move DateTime items through serde
-    #[derive(Debug)]
-    struct DateTimeWrapper(DateTime<FixedOffset>);
-    impl serde::ser::Serialize for DateTimeWrapper {
-        fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error> where S: serde::Serializer {
-            serializer.visit_str(&self.0.to_rfc3339())
-        }
-    }
-    impl serde::de::Deserialize for DateTimeWrapper {
-        fn deserialize<D>(deserializer: &mut D) -> Result<DateTimeWrapper, D::Error> where D: serde::Deserializer {
-            deserializer.visit(DateTimeVisitor)
-        }
-    }
-    struct DateTimeVisitor;
-    impl serde::de::Visitor for DateTimeVisitor {
-        type Value = DateTimeWrapper;
-
-        fn visit_str<E>(&mut self, s: &str) -> Result<Self::Value, E> where E: serde::de::Error {
-            match DateTime::parse_from_rfc3339(s) {
-                Ok(dt) => Ok(DateTimeWrapper(dt)),
-                Err(_) => Err(serde::de::Error::syntax("expect an ISO 8601 datetime"))
-            }
-        }
     }
 }
 
