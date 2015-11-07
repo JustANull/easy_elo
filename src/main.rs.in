@@ -17,6 +17,48 @@ mod types {
     use std::io::Error as IoError;
     use std::path::Path;
 
+    // All of a tournament's matches, as received from the Challonge API
+    // Only correctly parses completed tournaments
+    pub type TournamentChallonge = Vec<TournamentMatchChallongeWrapper>;
+    // A tournament match, as received from the Challonge API
+    // Only correctly parses completed matches
+    #[derive(Debug, Deserialize)]
+    pub struct TournamentMatchChallonge {
+        attachment_count: Option<i64>, // type unsure
+        created_at: DateTimeWrapper,
+        group_id: Option<i64>, // type unsure
+        has_attachment: bool,
+        id: i64, // the exact, unique match id
+        identifier: String, // what the match is called "e.g. the winner of match A plays in match B"
+        location: Option<String>, // type unsure
+        loser_id: i64,
+        optional: bool, // should always be "false" afaik
+        player1_id: i64,
+        player1_is_prereq_match_loser: bool,
+        player1_prereq_match_id: Option<i64>,
+        player1_votes: Option<i64>, // type unsure, almost definitely wrong
+        player2_id: i64,
+        player2_is_prereq_match_loser: bool,
+        player2_prereq_match_id: Option<i64>,
+        player2_votes: Option<i64>, // type unsure, almost definitely wrong
+        round: i64,
+        scheduled_time: Option<DateTimeWrapper>,
+        started_at: DateTimeWrapper,
+        state: String, // should always be "complete"
+        tournament_id: i64,
+        underway_at: Option<DateTimeWrapper>,
+        updated_at: DateTimeWrapper,
+        winner_id: i64,
+        prerequisite_match_ids_csv: String, // you must be joking
+        scores_csv: String // see the above ^
+    }
+    // Challonge API fixup
+    #[derive(Debug, Deserialize)]
+    struct TournamentMatchChallongeWrapper {
+        #[serde(rename="match")]
+        match_obj: TournamentMatchChallonge
+    }
+
     // A map from a tournament id "e.g. tloc-mnm32" to a vector of match results.
     pub type TournamentCache = HashMap<String, Vec<MatchResult>>;
     // ditto. contains wrapped date times to move items through chrono
@@ -63,6 +105,7 @@ mod types {
     }
 
     // Here be dragons. The wrappers to move DateTime items through serde
+    #[derive(Debug)]
     struct DateTimeWrapper(DateTime<FixedOffset>);
     impl serde::ser::Serialize for DateTimeWrapper {
         fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error> where S: serde::Serializer {
@@ -116,6 +159,8 @@ fn main() {
         return;
     }
 
+    let api_key = matches.opt_str("k").unwrap();
+
     let input_pathname = matches.opt_str("i").unwrap_or("input.txt".to_owned());
     let cache_pathname = matches.opt_str("c").unwrap_or("cache.json".to_owned());
     let output_pathname = matches.opt_str("o").unwrap_or("output.json".to_owned());
@@ -124,7 +169,11 @@ fn main() {
     let cache_path = Path::new(&cache_pathname);
     let output_path = Path::new(&output_pathname);
 
-    let mut cache = types::cache_read(&cache_path).expect("The cache should read successfully.");
+    let mut cache = types::cache_read(&cache_path).expect("The cache should read successfully");
 
-    types::cache_write(&cache_path, cache).expect("The cache should write successfully.");
+    let matches_url = ease::Url::parse("https://api.challonge.com/v1/tournaments/tloc-mnm50/matches.json").unwrap();
+    let matches: types::TournamentChallonge = serde_json::from_str(&ease::Request::new(matches_url).param("api_key", &api_key).get().unwrap().body).expect("This should work");
+    println!("{:?}", matches);
+
+    types::cache_write(&cache_path, cache).expect("The cache should write successfully");
 }
