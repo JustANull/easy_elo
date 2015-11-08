@@ -10,7 +10,7 @@ mod interop {
     use serde::ser::Serialize;
     use std::ops::{Deref, DerefMut};
 
-    #[derive(Debug)]
+    #[derive(Clone, Debug)]
     pub struct SerializableDateTime(DateTime<FixedOffset>);
     impl Serialize for SerializableDateTime {
         fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error> where S: Serializer {
@@ -55,11 +55,16 @@ mod types {
     use std::io::Error as IoError;
     use std::path::Path;
 
+    // All of a tournament's matches
+    pub type TournamentMatches = Vec<TournamentMatch>;
+
     // All of a tournament's matches, as received from the Challonge API
     // Only correctly parses completed tournaments
-    pub type TournamentChallonge = Vec<TournamentMatchChallonge>;
+    pub type TournamentMatchesChallonge = Vec<TournamentMatchChallonge>;
+    // All of a tournament's participants, as received from the Challonge API
+    pub type TournamentParticipantsChallonge = Vec<TournamentParticipantChallonge>;
     // A tournament match, as received from the Challonge API
-    // Only correctly parses completed matches
+    // Only correctly parses completed matches; other restrictions likely exist but are unknown
     #[derive(Debug, Deserialize)]
     pub struct TournamentMatchChallongeInterior {
         attachment_count: Option<i64>, // type unsure
@@ -81,7 +86,7 @@ mod types {
         player2_votes: Option<i64>, // type unsure, almost definitely wrong
         round: i64,
         scheduled_time: Option<SerializableDateTime>,
-        started_at: SerializableDateTime,
+        started_at: Option<SerializableDateTime>,
         state: String, // should always be "complete"
         tournament_id: i64,
         underway_at: Option<SerializableDateTime>,
@@ -90,17 +95,90 @@ mod types {
         prerequisite_match_ids_csv: String, // you must be joking
         scores_csv: String // see the above ^
     }
+    // A tournament participant, as received from the Challonge API
+    #[derive(Debug, Deserialize)]
+    pub struct TournamentParticipantChallongeInterior {
+        active: bool,
+        checked_in_at: Option<SerializableDateTime>,
+        created_at: SerializableDateTime,
+        final_rank: Option<i64>,
+        group_id: Option<i64>, // type unsure
+        icon: Option<String>, // type unsure
+        id: i64,
+        invitation_id: Option<i64>,
+        invite_email: Option<String>, // type unsure
+        misc: Option<String>, // type unsure
+        name: String, // the user's display name
+        on_waiting_list: bool,
+        seed: i64,
+        tournament_id: i64,
+        updated_at: SerializableDateTime,
+        challonge_username: Option<String>, // what we actually want- may be null, in which case we defer to username and pray
+        challonge_email_address_verified: Option<bool>, // type unsure
+        removable: bool,
+        participatable_or_invitation_attached: bool,
+        confirm_remove: bool,
+        invitation_pending: bool,
+        display_name: Option<String>, // type unsure, undocumented ???
+        display_name_with_invitation_email_address: Option<String>, // type unsure, ???
+        email_hash: Option<String>,
+        username: Option<String>, // if this is None, we cannot properly identify the user. panic abounds! or, well, skip the match and output a warning?
+        attached_participatable_portrait_url: Option<String>,
+        can_check_in: bool,
+        checked_in: bool, // if this is true, we should check challonge_username
+        reactivatable: bool
+    }
     // Challonge API fixup
     #[derive(Debug, Deserialize)]
     struct TournamentMatchChallonge {
         #[serde(rename="match")]
         match_obj: TournamentMatchChallongeInterior
     }
+    // ditto
+    #[derive(Debug, Deserialize)]
+    struct TournamentParticipantChallonge {
+        participant: TournamentParticipantChallongeInterior
+    }
+
+    pub fn matches_simplify(matches: TournamentMatchesChallonge, participants: TournamentParticipantsChallonge) -> TournamentMatches {
+        // First transform the participants into a map from ID to challonge_username/username
+        let mut participant_ids = HashMap::new();
+        for participant in participants.into_iter() {
+            let TournamentParticipantChallonge {
+                participant: TournamentParticipantChallongeInterior {
+                    id, challonge_username, username, name, ..
+                }
+            } = participant;
+
+            if let Some(username) = challonge_username {
+                participant_ids.insert(id, username);
+            } else if let Some(username) = username {
+                participant_ids.insert(id, username);
+            } else {
+                println!("The user going by the name {} did not enter a Challonge username. Their matches will be ignored.", name);
+            }
+        }
+
+        let mut res = vec![];
+
+        for match_res in matches.into_iter() {
+            let winner_id = match_res.match_obj.winner_id;
+            let loser_id = match_res.match_obj.loser_id;
+
+            if let Some(winner_name) = participant_ids.get(&winner_id) {
+                if let Some(loser_name) = participant_ids.get(&loser_id) {
+                    res.push((match_res.match_obj.updated_at, winner_name.clone(), loser_name.clone()));
+                }
+            }
+        }
+
+        res
+    }
 
     // A map from a tournament id "e.g. tloc-mnm32" to a vector of match results.
-    pub type TournamentCache = HashMap<String, Vec<MatchResult>>;
+    pub type TournamentCache = HashMap<String, TournamentMatches>;
     // The time of a match and the winner and loser
-    pub type MatchResult = (SerializableDateTime, String, String);
+    pub type TournamentMatch = (SerializableDateTime, String, String);
 
     #[derive(Debug)]
     pub enum CacheWriteError {
@@ -111,10 +189,10 @@ mod types {
     pub fn cache_read(cache_path: &Path) -> Result<TournamentCache, serde_json::Error> {
         Ok(try!(parse(cache_path)))
     }
-    pub fn cache_write(cache_path: &Path, cache: TournamentCache) -> Result<(), CacheWriteError> {
+    pub fn cache_write(cache_path: &Path, cache: &TournamentCache) -> Result<(), CacheWriteError> {
         serde_json::to_writer(&mut try!(File::create(cache_path)
                                         .map_err(CacheWriteError::IoError)),
-                              &cache).map_err(CacheWriteError::JsonError)
+                              cache).map_err(CacheWriteError::JsonError)
     }
 
     fn parse(cache_path: &Path) -> Result<TournamentCache, serde_json::Error> {
@@ -124,11 +202,14 @@ mod types {
     }
 }
 
+use ease::{Request, Url};
 use getopts::Options;
+use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use types::{TournamentMatches, TournamentMatchesChallonge, TournamentParticipantsChallonge};
 
 fn usage(prog: &str, opts: Options) {
     let brief = format!("Usage: {} [options]", prog);
@@ -145,7 +226,7 @@ fn main() {
         .reqopt("k", "api-key", "The Challonge API key (required)", "API_KEY")
         .optopt("c", "cache-file", "The file to store the tournament cache inside (default cache.json)", "CACHE_FILE")
         .optopt("o", "output", "The file to output rankings to (default output.json)", "OUTPUT_FILE");
-    let matches = match opts.parse(&args[1..]) {
+    let opt_matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(f) => {
             println!("Error: {}", f.to_string());
@@ -154,16 +235,16 @@ fn main() {
         }
     };
 
-    if matches.opt_present("h") {
+    if opt_matches.opt_present("h") {
         usage(&program, opts);
         return;
     }
 
-    let api_key = matches.opt_str("k").unwrap();
+    let api_key = opt_matches.opt_str("k").unwrap();
 
-    let input_pathname = matches.opt_str("i").unwrap_or("input.txt".to_owned());
-    let cache_pathname = matches.opt_str("c").unwrap_or("cache.json".to_owned());
-    let output_pathname = matches.opt_str("o").unwrap_or("output.json".to_owned());
+    let input_pathname = opt_matches.opt_str("i").unwrap_or("input.txt".to_owned());
+    let cache_pathname = opt_matches.opt_str("c").unwrap_or("cache.json".to_owned());
+    let output_pathname = opt_matches.opt_str("o").unwrap_or("output.json".to_owned());
 
     let input_path = Path::new(&input_pathname);
     let cache_path = Path::new(&cache_pathname);
@@ -173,15 +254,24 @@ fn main() {
 
     let input_file = BufReader::new(File::open(input_path)
                                     .expect("The input file should read successfully"));
-    let input_lines = input_file.lines().map(|l| l.expect("The lines should be properly formatted"));
-    let input_needed = input_lines.filter(|l| !cache.contains_key(l)).collect::<Vec<String>>();
+    let input_lines = input_file.lines().map(|l| l.expect("The lines should be properly formatted")).collect::<Vec<String>>();
+    let input_needed = input_lines.clone().into_iter().filter(|l| !cache.contains_key(l)).collect::<Vec<String>>();
 
     for line in input_needed {
-        println!("{}", line);
+        println!("Retrieving {}...", line);
+
+        let matches_url = Url::parse(&format!("https://api.challonge.com/v1/tournaments/{}/matches.json", line)).expect("The URL should be valid");
+        let participants_url = Url::parse(&format!("https://api.challonge.com/v1/tournaments/{}/participants.json", line)).expect("The URL should be valid");
+
+        let matches: TournamentMatchesChallonge = serde_json::from_str(&Request::new(matches_url).param("api_key", &api_key).get().unwrap().body).expect("We should receive valid JSON for matches");
+        let participants: TournamentParticipantsChallonge = serde_json::from_str(&Request::new(participants_url).param("api_key", &api_key).get().unwrap().body).expect("We should receive valid JSON for participants");
+
+        let simplified = types::matches_simplify(matches, participants);
+        cache.insert(line, simplified);
     }
 
-    let matches_url = ease::Url::parse("https://api.challonge.com/v1/tournaments/tloc-mnm50/matches.json").unwrap();
-    let matches: types::TournamentChallonge = serde_json::from_str(&ease::Request::new(matches_url).param("api_key", &api_key).get().unwrap().body).expect("This should work");
+    // Get out the portion of the cache that only contains tournaments we have in our input.
+    let cache_needed = cache.clone().into_iter().filter(|&(ref k, _)| input_lines.clone().into_iter().any(|ref l| l == k)).collect::<HashMap<String, TournamentMatches>>();
 
-    types::cache_write(&cache_path, cache).expect("The cache should write successfully");
+    types::cache_write(&cache_path, &cache).expect("The cache should write successfully");
 }
