@@ -3,7 +3,6 @@ name = "easy_elo"
 version = "0.1.0"
 dependencies = [
  "chrono 0.2.16 (registry+https://github.com/rust-lang/crates.io-index)",
- "crossbeam 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "ease 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "getopts 0.2.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -53,11 +52,6 @@ dependencies = [
  "time 0.1.33 (registry+https://github.com/rust-lang/crates.io-index)",
  "url 0.2.37 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
-
-[[package]]
-name = "crossbeam"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "ease"
