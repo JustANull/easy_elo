@@ -1,6 +1,7 @@
 extern crate chrono;
 extern crate ease;
 extern crate getopts;
+extern crate num;
 
 mod interop {
     use chrono::DateTime;
@@ -204,6 +205,7 @@ mod types {
 
 use ease::{Request, Url};
 use getopts::Options;
+use num::traits::Float;
 use std::collections::HashMap;
 use std::env;
 use std::fs::File;
@@ -279,5 +281,25 @@ fn main() {
     }
     cache_needed_vec.sort_by(|&(ref a, _, _), &(ref b, _, _)| a.cmp(b));
 
+    // And finally, apply the Elo algorithm
+    // The map relates username to (number of matches played, ranking)
+    let mut rankings = HashMap::<String, (i64, f64)>::new();
+    for (_, winner, loser) in cache_needed_vec.into_iter() {
+        let (n_winner, r_winner) = *rankings.get(&winner).unwrap_or(&(0, 0.0));
+        let (n_loser, r_loser) = *rankings.get(&loser).unwrap_or(&(0, 0.0));
+
+        let k_winner = if n_winner < 10 { 32.0 } else { 24.0 };
+        let k_loser = if n_winner < 10 { 32.0 } else { 24.0 };
+
+        let p_winner = 1.0 / (1.0 + 10.0.powf((r_loser - r_winner) / 400.0));
+        let p_loser = 1.0 / (1.0 + 10.0.powf((r_winner - r_loser) / 400.0));
+
+        rankings.insert(winner, (n_winner + 1, r_winner + k_winner * p_winner));
+        rankings.insert(loser, (n_loser + 1, r_loser - k_loser * p_loser));
+    }
+    // And modify the numbers so they're a bit more pretty
+    let rankings = rankings.into_iter().map(|(name, (_, rating))| (name, rating + 1200.0)).collect::<HashMap<String, f64>>();
+
+    serde_json::to_writer(&mut File::create(output_path).expect("The output should write successfully"), &rankings).expect("The output should format correctly.");
     types::cache_write(&cache_path, &cache).expect("The cache should write successfully");
 }
