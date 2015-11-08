@@ -270,8 +270,14 @@ fn main() {
         cache.insert(line, simplified);
     }
 
-    // Get out the portion of the cache that only contains tournaments we have in our input.
+    // Get out the portion of the cache that only contains tournaments we have in our input
     let cache_needed = cache.clone().into_iter().filter(|&(ref k, _)| input_lines.clone().into_iter().any(|ref l| l == k)).collect::<HashMap<String, TournamentMatches>>();
+    // Sort the needed bit of the cache by the date the matches finished
+    let mut cache_needed_vec = vec![];
+    for (_, matches) in cache_needed {
+        cache_needed_vec.extend(matches.into_iter());
+    }
+    cache_needed_vec.sort_by(|&(ref a, _, _), &(ref b, _, _)| a.cmp(b));
 
     types::cache_write(&cache_path, &cache).expect("The cache should write successfully");
 }
