@@ -299,7 +299,7 @@ fn main() {
     // And modify the numbers so they're a bit more pretty, filtering low-activity players as well
     let rankings = rankings.into_iter().filter_map(|(name, (n, rating))| {
         if n >= 10 {
-            Some((name, ((rating + 1200.0) * 100.0).round() / 100.0))
+            Some((name, rating + 1200.0))
         } else {
             None
         }
